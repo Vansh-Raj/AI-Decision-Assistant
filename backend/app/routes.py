@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 
 from .config import settings
+from .observability import get_logger, log_event
 from .rag.pipeline import RagPipeline
 from pydantic import BaseModel
 from .schemas import HistoryItem, HistoryResponse, QueryRequest, UploadResponse, DocumentStatusResponse
 from .services.document_service import DocumentService
 
 router = APIRouter(prefix="/api", tags=["decision-engine"])
+logger = get_logger("api")
 
 class EvaluateRequest(BaseModel):
     question: str
     answer: str
+    context: str = ""
     
 class EvaluateResponse(BaseModel):
     relevance: str
@@ -27,6 +32,7 @@ async def evaluate_answer(payload: EvaluateRequest) -> EvaluateResponse:
     from langchain_openai import ChatOpenAI
     from .config import settings
     
+    start = time.perf_counter()
     eval_llm = ChatOpenAI(
         model=settings.chat_model,
         api_key=settings.openrouter_api_key,
@@ -34,24 +40,36 @@ async def evaluate_answer(payload: EvaluateRequest) -> EvaluateResponse:
         temperature=0
     )
     
-    rel_eval = load_evaluator("criteria", criteria="relevance", llm=eval_llm)
-    acc_eval = load_evaluator("criteria", criteria={"faithfulness": "Is the information factually accurate and faithful to the provided context?"}, llm=eval_llm)
+    rel_eval = load_evaluator("criteria", criteria={"relevance": "Does the response directly answer the specific question asked by the user?"}, llm=eval_llm)
+    acc_eval = load_evaluator("labeled_criteria", criteria={"faithfulness": "Is the response factually accurate based strictly on the provided reference context?"}, llm=eval_llm)
     grnd_eval = load_evaluator(
-        "criteria", 
-        criteria={"groundedness": "Does the submission ONLY contain information strictly present in the reference context?"},
+        "labeled_criteria", 
+        criteria={"groundedness": "Does the response avoid hallucinating external information not present in the reference context?"},
         llm=eval_llm
     )
     
     rel_result = rel_eval.evaluate_strings(prediction=payload.answer, input=payload.question)
-    acc_result = acc_eval.evaluate_strings(prediction=payload.answer, input=payload.question)
-    grnd_result = grnd_eval.evaluate_strings(prediction=payload.answer, input=payload.question)
-    
-    return EvaluateResponse(
+    acc_result = acc_eval.evaluate_strings(prediction=payload.answer, input=payload.question, reference=payload.context)
+    grnd_result = grnd_eval.evaluate_strings(prediction=payload.answer, input=payload.question, reference=payload.context)
+
+    response = EvaluateResponse(
         relevance=rel_result.get("value", "N/A"),
         faithfulness=acc_result.get("value", "N/A"),
         groundedness=grnd_result.get("value", "N/A"),
         reasoning=f"Relevance: {rel_result.get('reasoning')} \n\nAccuracy: {acc_result.get('reasoning')} \n\nGroundedness: {grnd_result.get('reasoning')}"
     )
+    log_event(
+        logger,
+        "answer_evaluated",
+        latency_ms=round((time.perf_counter() - start) * 1000),
+        question_preview=payload.question[:120],
+        answer_chars=len(payload.answer),
+        context_chars=len(payload.context),
+        relevance=response.relevance,
+        faithfulness=response.faithfulness,
+        groundedness=response.groundedness,
+    )
+    return response
 
 
 
@@ -71,6 +89,15 @@ async def upload_document(
 ) -> UploadResponse:
     record = await document_service.save_upload_initial(file)
     background_tasks.add_task(document_service.process_upload_background, record.id, record.storage_path, record.filename)
+    log_event(
+        logger,
+        "upload_enqueued",
+        document_id=record.id,
+        filename=record.filename,
+        content_type=record.content_type,
+        size_bytes=record.size_bytes,
+        status=record.status,
+    )
     return UploadResponse(
         document_id=record.id,
         filename=record.filename,
@@ -91,6 +118,13 @@ async def get_document_status(
     if not record:
         raise HTTPException(status_code=404, detail="Document not found")
     chunk_records = document_service.chunk_repository.list_for_retrieval(doc_id)
+    log_event(
+        logger,
+        "document_status_checked",
+        document_id=doc_id,
+        status=record.status,
+        chunk_count=len(chunk_records),
+    )
     return DocumentStatusResponse(
         status=record.status,
         chunk_count=len(chunk_records)
@@ -102,6 +136,14 @@ async def query_documents(
     payload: QueryRequest,
     rag_pipeline: RagPipeline = Depends(get_rag_pipeline),
 ) -> StreamingResponse:
+    log_event(
+        logger,
+        "query_requested",
+        question_preview=payload.question[:160],
+        doc_id=payload.doc_id,
+        top_k=payload.top_k,
+        chat_history_messages=len(payload.chat_history or []),
+    )
     return StreamingResponse(
         rag_pipeline.stream_rag_response(
             query=payload.question,
@@ -135,4 +177,6 @@ async def get_history(
         )
         for record in records
     ]
-    return HistoryResponse(items=items, count=len(items))
+    response = HistoryResponse(items=items, count=len(items))
+    log_event(logger, "history_requested", limit=limit, count=response.count)
+    return response

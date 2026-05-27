@@ -1,148 +1,173 @@
 # AI Decision Assistant
 
-A production-grade AI system designed to help users make data-driven decisions by interacting with uploaded documents through contextual, multi-turn reasoning.
+An AI-assisted document Q&A application built for a take-home assignment. Users can upload PDFs or text files, ask questions against the uploaded content, and inspect streamed answers with citations and retrieval details.
+
+## What This Repo Implements
+
+- FastAPI backend for upload, query, history, document status, and answer evaluation APIs
+- Document ingestion for text-based PDFs and UTF-8 text files
+- Chunking with `RecursiveCharacterTextSplitter`
+- Embeddings via OpenRouter-compatible `OpenAIEmbeddings`
+- Vector storage in Qdrant
+- Query history and document metadata in PostgreSQL
+- RAG answering with semantic, BM25, and hybrid retrieval modes
+- Streaming responses over Server-Sent Events
+- React frontend with chat UI, document picker, reasoning panel, and citations
+- Structured JSON logs for request, ingestion, retrieval, prompt, and generation events
+- Optional LangSmith tracing if the relevant environment variables are configured
+
+## Current Scope And Limits
+
+This project is a working prototype, not a finished production deployment.
+
+- Document processing uses FastAPI background tasks, not a separate worker queue.
+- PDF extraction works for text-based PDFs. Scanned PDFs and OCR are not handled.
+- BM25 retrieval is computed in application memory over stored chunks, not via PostgreSQL full-text search.
+- Evaluation uses LLM-based scoring and depends on external model access.
+- The system stores query history, but it does not yet include authentication, multi-tenant isolation, or admin tooling.
 
 ## Architecture
 
-This project implements a Clean Architecture paradigm separating the presentation layer, business logic, data access, and third-party integrations.
+Conceptually the system looks like this:
+
+`User -> React frontend -> FastAPI API -> RAG pipeline -> PostgreSQL + Qdrant -> LLM -> streamed response`
 
 ```mermaid
-graph TD
-    %% Styling
-    classDef frontend fill:#3b82f6,stroke:#2563eb,stroke-width:2px,color:#fff;
-    classDef backend fill:#10b981,stroke:#059669,stroke-width:2px,color:#fff;
-    classDef db fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#fff;
-    classDef external fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:#fff;
+flowchart LR
+    U[User]
+    F[React Frontend<br/>Vite chat UI]
+    API[FastAPI API<br/>upload query history evaluate]
+    DS[Document Service<br/>extract chunk embed]
+    RAG[RAG Pipeline<br/>plan retrieve generate]
+    PG[(PostgreSQL<br/>documents chunks history)]
+    QD[(Qdrant<br/>embeddings)]
+    LLM[OpenRouter-compatible LLMs<br/>chat + embeddings]
+    OBS[Structured Logs<br/>request retrieval generation]
 
-    %% Components
-    subgraph Client
-        UI["React Frontend (Vite)"]:::frontend
-    end
-
-    subgraph "Backend (FastAPI)"
-        API["API Router (/api)"]:::backend
-        
-        subgraph "Core Services"
-            DS["Document Service<br>(Background Worker)"]:::backend
-            RAG["RAG Pipeline<br>(Retrieval & Generation)"]:::backend
-            EVAL["Evaluation Engine<br>(LLM-as-a-Judge)"]:::backend
-        end
-        
-        subgraph "Data Access Layer"
-            REPO["Repositories<br>(Chunk, History, Document)"]:::backend
-            VS_SVC["Vector Store Service"]:::backend
-        end
-    end
-
-    subgraph Storage
-        PG[("PostgreSQL<br>(Relational Data)")]:::db
-        QD[("Qdrant<br>(Vector Data)")]:::db
-    end
-
-    subgraph "External Services"
-        OR["OpenRouter<br>(LLMs & Embeddings)"]:::external
-        LS["LangSmith<br>(Tracing & Eval Datasets)"]:::external
-    end
-
-    %% Connections
-    UI -- "HTTP/SSE" --> API
-    
-    %% API to Services
-    API -- "/upload" --> DS
-    API -- "/query" --> RAG
-    API -- "/evaluate" --> EVAL
-
-    %% Document Ingestion Flow
-    DS -- "Extract & Chunk" --> REPO
-    DS -- "Embeddings" --> OR
-    DS -- "Upsert Vectors" --> VS_SVC
-
-    %% RAG Flow
-    RAG -- "Query Planner" --> OR
-    RAG -- "Search (Semantic/BM25)" --> VS_SVC
-    RAG -- "Generate Answer" --> OR
-    RAG -- "Save Chat Log" --> REPO
-
-    %% Evaluation Flow
-    EVAL -- "Score Generation" --> OR
-    
-    %% Data Access Flow
-    REPO -- "SQL" --> PG
-    VS_SVC -- "gRPC/HTTP" --> QD
-    
-    %% Observability
-    RAG -. "Trace Events" .-> LS
-    EVAL -. "Log Scores" .-> LS
+    U --> F
+    F -->|HTTP + SSE| API
+    API --> DS
+    API --> RAG
+    DS --> PG
+    DS --> QD
+    DS --> LLM
+    RAG --> PG
+    RAG --> QD
+    RAG --> LLM
+    API -.-> OBS
+    DS -.-> OBS
+    RAG -.-> OBS
 ```
 
-### System Flow
-1. **Frontend**: React (Vite) interface built for premium UX. It handles streaming (SSE) and displays multi-turn reasoning transparently.
-2. **Backend**: FastAPI manages routing and validates requests.
-3. **Document Service**: Offloads file parsing and chunking into a background worker queue to keep the API highly responsive.
-4. **RAG Pipeline**: A sophisticated AI orchestrator that leverages a Query Planner to dynamically route user questions to Semantic, BM25, or Hybrid search layers depending on context.
-5. **Storage**: PostgreSQL handles relational metadata (document status, chunk text, chat history), while Qdrant strictly handles dense vector storage.
+### Backend
 
-## Tradeoffs & Design Decisions
+- [backend/app/routes.py](/home/vansh/Documents/Dev/RAG%20Project/backend/app/routes.py:1) defines the API surface.
+- [backend/app/services/document_service.py](/home/vansh/Documents/Dev/RAG%20Project/backend/app/services/document_service.py:1) handles file persistence, extraction, chunking, embedding, and vector upserts.
+- [backend/app/rag/pipeline.py](/home/vansh/Documents/Dev/RAG%20Project/backend/app/rag/pipeline.py:1) handles retrieval planning, retrieval, prompt construction, streaming generation, and query logging.
+- [backend/app/repositories.py](/home/vansh/Documents/Dev/RAG%20Project/backend/app/repositories.py:1) provides data access for documents, chunks, and query history.
+- [backend/app/observability.py](/home/vansh/Documents/Dev/RAG%20Project/backend/app/observability.py:1) adds structured logging and request-scoped trace IDs.
 
-### 1. Asynchronous Ingestion (Background Tasks vs Sync)
-**Decision**: Document ingestion and embedding are pushed to a background task worker.
-**Tradeoff**: While this requires a slightly more complex UI (polling for document status), it prevents the API from blocking during large PDF uploads, guaranteeing a highly responsive chat application at scale.
+### Frontend
 
-### 2. Multi-Turn RAG (LLM Query Rewriting vs Naive Vector Search)
-**Decision**: We use an LLM "Retrieval Planner" to rewrite queries and resolve pronouns before searching the vector database.
-**Tradeoff**: This adds an extra LLM call (increasing latency slightly), but radically improves *AI Correctness* by ensuring follow-up questions like "What did you mean by that?" are rewritten into dense semantic concepts before searching.
+- [frontend/src/App.tsx](/home/vansh/Documents/Dev/RAG%20Project/frontend/src/App.tsx:1) contains the single-page chat experience.
+- [frontend/src/index.css](/home/vansh/Documents/Dev/RAG%20Project/frontend/src/index.css:1) provides the UI styling and responsive layout.
+- The frontend consumes `/api/query` as an SSE stream and updates the last assistant message incrementally.
 
-### 3. Dual Database (PostgreSQL + Qdrant)
-**Decision**: Chunk texts and conversation logs are stored in PostgreSQL, while embeddings are stored in Qdrant.
-**Tradeoff**: Managing two databases adds infrastructure complexity, but it ensures that Qdrant is strictly optimized for fast ANN (Approximate Nearest Neighbor) vector searches, while PostgreSQL securely handles relational integrity and BM25 full-text search fallbacks.
+## API Summary
 
-## Reliability & Fault Tolerance
+- `POST /api/upload`
+  Upload a PDF or text file. Returns a document id and initial status.
 
-- **Circuit Breakers**: If PDF parsing fails, the background worker safely traps the exception and flips the document state to `"failed"`, instantly informing the UI without crashing the backend.
-- **Retry Logic & Backoff**: Langchain integrations are wrapped with exponential backoff (`max_retries=3`) and strict timeouts (30s-60s) to gracefully handle OpenAI API rate limits and network degradation.
-- **Graceful Degradation**: If the Retrieval Planner hallucinations an invalid JSON plan, the system safely catches the exception and falls back to a broad "hybrid" search.
+- `GET /api/documents/{doc_id}/status`
+  Returns the ingestion status and current chunk count for one document.
 
-## Observability & Evaluation
+- `POST /api/query`
+  Starts a streamed RAG response. The response uses `text/event-stream`.
 
-- **LangSmith Tracing**: Every LLM interaction, token count, and retrieval latency is logged to LangSmith for real-time observability.
-- **UI Telemetry**: The React frontend visually exposes the Retrieval Planner's internal decision-making (Mode, Rewritten Query, Chunk Count, Latency) so the user isn't kept in the dark.
-- **LLM-as-a-Judge Evaluation Engine**: Includes a dedicated `evaluate_prompts.py` script and a `/api/evaluate` UI endpoint that quantitatively grades RAG responses on **Faithfulness**, **Relevance**, and **Groundedness**.
+- `GET /api/history`
+  Returns recent query history from PostgreSQL.
 
-### LLM-as-a-Judge Results
-Below is a sample evaluation matrix generated dynamically via the `/api/evaluate` endpoint against our hybrid RAG pipeline:
+- `POST /api/evaluate`
+  Runs an LLM-based grading pass over an answer using relevance, faithfulness, and groundedness criteria.
 
-| Test Question | Relevance | Faithfulness | Groundedness |
-|---------------|-----------|--------------|--------------|
-| Which organization was responsible for the attacks? | Y | Y | Y |
-| What hotels were targeted during the operation? | Y | Y | Y |
-| Who was the mastermind behind the attacks? | Y | Y | Y |
-| What was the main objective of the terrorist organization? | Y | Y | Y |
-| How many attackers were involved? | Y | Y | Y |
+## Retrieval And Answering Flow
 
-## Quickstart
+1. A file is uploaded and stored on disk.
+2. The backend extracts text, splits it into chunks, stores chunk rows in PostgreSQL, embeds the chunks, and upserts vectors into Qdrant.
+3. When a question arrives, the pipeline asks the model to choose a retrieval mode and rewrite the query when helpful.
+4. The system runs semantic retrieval, BM25 retrieval, or both depending on that plan.
+5. Retrieved chunks are assembled into a constrained prompt.
+6. The model streams back XML-like output containing reasoning, answer text, and sources.
+7. The backend parses that output, emits citations to the UI, and saves the interaction to query history.
+
+## Observability
+
+The repo now includes code-level observability rather than only documentation claims.
+
+- HTTP middleware logs request start, completion, failure, status code, latency, and `request_id`
+- Upload logs capture file metadata and ingestion lifecycle events
+- RAG logs capture retrieval mode selection, chunk counts, latency, prompt previews, cache hits, and generation timing
+- Evaluation logs capture scoring latency and outputs
+- Query history persists retrieved chunk ids, matched documents, latency, and raw model output
+
+If LangSmith environment variables are configured, the `@traceable` decorators in the RAG pipeline add extra tracing on top of the structured app logs.
+
+## Setup
 
 ### Prerequisites
-- Docker & Docker Compose
-- Python 3.11+
 
-### Setup
-Create a `.env` in the root directory:
+- Python 3.11+
+- Node.js 20+
+- Docker and Docker Compose
+
+### Environment
+
+Create a `.env` file in the project root:
+
 ```env
 OPENROUTER_API_KEY=your_key_here
+POSTGRES_DSN=postgresql://postgres:postgres@localhost:5433/ai_decision
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/ai_decision
+QDRANT_URL=http://localhost:6333
 LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_key_here
+LANGCHAIN_API_KEY=your_langsmith_key_here
 LANGCHAIN_PROJECT=ai_decision_backend
 ```
 
-### Run the Application
-Use the unified start script:
+Only `OPENROUTER_API_KEY` is strictly required for model calls. LangSmith settings are optional.
+
+### Run The Backend
+
 ```bash
 ./start.sh
 ```
-This automatically spins up Qdrant and PostgreSQL via Docker, creates a Python virtual environment, installs dependencies, and launches the FastAPI server. 
 
-To run the Frontend (in a separate terminal):
+This script starts PostgreSQL and Qdrant through Docker, creates a virtual environment if needed, installs Python dependencies, and launches the FastAPI app.
+
+### Run The Frontend
+
 ```bash
 cd frontend
 ./start.sh
 ```
+
+## Tradeoffs
+
+- The project favors readability and assignment coverage over deep modularity.
+- The retrieval planner improves multi-turn behavior, but it adds an extra model call.
+- Keeping relational data in PostgreSQL and vectors in Qdrant makes responsibilities clearer, but increases local setup complexity.
+- The frontend is intentionally transparent about retrieval behavior, even if that exposes system internals that a consumer-facing product might hide.
+
+## Testing And Verification
+
+- There is an API-oriented test file in [backend/tests/test_api.py](/home/vansh/Documents/Dev/RAG%20Project/backend/tests/test_api.py:1).
+- In this workspace, test execution still depends on resolving existing dependency/import issues outside the README changes.
+- Frontend validation can be done with `npm run build` inside `frontend`.
+
+## Deliverable Notes
+
+This repo includes the main application code and a README. If you are packaging it as a submission, you would still want to add:
+
+- A short demo video
+- A brief architecture screenshot or simplified diagram
+- A short section showing one or two example question/answer/citation flows

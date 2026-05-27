@@ -64,6 +64,8 @@ class Settings:
         " ",
         "",
     )
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    prompt_preview_chars: int = int(os.getenv("PROMPT_PREVIEW_CHARS", "280"))
 
 
 settings = Settings()

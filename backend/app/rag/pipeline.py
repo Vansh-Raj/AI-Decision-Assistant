@@ -21,6 +21,7 @@ from qdrant_client.http import models as qdrant_models
 from rank_bm25 import BM25Okapi
 
 from ..config import settings
+from ..observability import get_logger, log_event
 from ..repositories import (
     ChunkRepository,
     ChunkSearchRecord,
@@ -71,6 +72,9 @@ class RetrievalPlan:
     mode: str
     search_query: str
     reason: str
+
+
+logger = get_logger("rag")
 
 
 class RagPipeline:
@@ -131,8 +135,24 @@ class RagPipeline:
                 mode = "hybrid"
             search_query = str(parsed.get("search_query") or query).strip() or query
             reason = str(parsed.get("reason") or "LLM selected retrieval strategy.")
+            log_event(
+                logger,
+                "retrieval_plan_chosen",
+                mode=mode,
+                query_preview=query[:160],
+                rewritten_query=search_query[:160],
+                chat_history_messages=len(chat_history or []),
+                planner_reason=reason,
+            )
             return RetrievalPlan(mode=mode, search_query=search_query, reason=reason)
         except Exception:
+            log_event(
+                logger,
+                "retrieval_plan_fallback",
+                level=logger.exception,
+                query_preview=query[:160],
+                chat_history_messages=len(chat_history or []),
+            )
             return RetrievalPlan(
                 mode="hybrid",
                 search_query=query,
@@ -166,6 +186,22 @@ class RagPipeline:
             chunks = self._merge_results(semantic_chunks, bm25_chunks, k)
 
         retrieval_latency = time.perf_counter() - start
+        log_event(
+            logger,
+            "retrieval_completed",
+            mode=plan.mode,
+            doc_id=doc_id,
+            top_k=k,
+            semantic_hits=len(semantic_chunks),
+            bm25_hits=len(bm25_chunks),
+            final_hits=len(chunks),
+            latency_ms=round(retrieval_latency * 1000),
+            matched_chunk_ids=[
+                chunk.metadata.get("chunk_id")
+                for chunk in chunks
+                if chunk.metadata.get("chunk_id") is not None
+            ],
+        )
         return chunks, retrieval_latency, plan
 
     def _semantic_retrieve(
@@ -289,15 +325,33 @@ class RagPipeline:
                 elif msg.role == "assistant":
                     messages.append(AIMessage(content=msg.content))
         messages.append(HumanMessage(content=user_message))
+        prompt_preview = user_message[: settings.prompt_preview_chars]
+        log_event(
+            logger,
+            "generation_prompt_built",
+            query_preview=query[:160],
+            chunk_count=len(chunks),
+            chat_history_messages=len(chat_history or []),
+            prompt_preview=prompt_preview,
+            context_chars=len(context_block),
+        )
         return messages
 
     @traceable(name="stream_rag_response")
     async def stream_rag_response(
         self, query: str, doc_id: int | None = None, top_k: int = 5, chat_history: list[ChatMessage] | None = None
     ) -> AsyncGenerator[str, None]:
+        request_start = time.perf_counter()
         if not chat_history:
             cached = self.history_repository.get_cached_query(query, doc_id)
             if cached:
+                log_event(
+                    logger,
+                    "query_cache_hit",
+                    query_preview=query[:160],
+                    doc_id=doc_id,
+                    chunk_count=cached.chunk_count,
+                )
                 yield self._format_sse({
                     "type": "retrieval_done",
                     "retrieval_mode": "cache",
@@ -318,6 +372,15 @@ class RagPipeline:
                     "reasoning": cached.reasoning,
                     "sources": cached.sources,
                 })
+                log_event(
+                    logger,
+                    "generation_completed",
+                    source="cache",
+                    doc_id=doc_id,
+                    answer_chars=len(cached.answer),
+                    citation_count=len(cached.sources),
+                    total_latency_ms=round((time.perf_counter() - request_start) * 1000),
+                )
                 yield "data: [DONE]\n\n"
                 return
 
@@ -354,22 +417,42 @@ class RagPipeline:
 
         messages = self.build_prompt(query, chunks, chat_history)
         full_response = ""
-        async for token in self.llm.astream(messages):
-            text = token.content if isinstance(token.content, str) else ""
-            if not text:
-                continue
-            full_response += text
-            
-            if len(text) > 30:
-                words = text.split(" ")
-                for i, word in enumerate(words):
-                    yield self._format_sse({"type": "token", "text": word + (" " if i < len(words) - 1 else "")})
-                    await asyncio.sleep(0.02)
-            else:
-                yield self._format_sse({"type": "token", "text": text})
-                await asyncio.sleep(0.01)
+        generation_start = time.perf_counter()
+        token_events = 0
+        try:
+            async for token in self.llm.astream(messages):
+                text = token.content if isinstance(token.content, str) else ""
+                if not text:
+                    continue
+                full_response += text
+                token_events += 1
+
+                if len(text) > 30:
+                    words = text.split(" ")
+                    for i, word in enumerate(words):
+                        yield self._format_sse({"type": "token", "text": word + (" " if i < len(words) - 1 else "")})
+                        await asyncio.sleep(0.02)
+                else:
+                    yield self._format_sse({"type": "token", "text": text})
+                    await asyncio.sleep(0.01)
+        except Exception:
+            log_event(
+                logger,
+                "generation_failed",
+                level=logger.exception,
+                query_preview=query[:160],
+                doc_id=doc_id,
+                chunk_count=len(chunks),
+                latency_ms=round((time.perf_counter() - generation_start) * 1000),
+            )
+            raise
 
         citations = self.parse_citations(full_response)
+        for cit in citations:
+            for chunk in chunks:
+                if str(chunk.metadata.get("chunk_id")) == str(cit.get("chunk_id")):
+                    cit["content"] = chunk.page_content
+                    break
         parsed = self.parse_answer(full_response)
         yield self._format_sse({"type": "citations", "data": citations})
         yield self._format_sse(
@@ -379,6 +462,20 @@ class RagPipeline:
                 "reasoning": parsed["reasoning"],
                 "sources": citations,
             }
+        )
+        log_event(
+            logger,
+            "generation_completed",
+            source="llm",
+            query_preview=query[:160],
+            doc_id=doc_id,
+            chunk_count=len(chunks),
+            citation_count=len(citations),
+            answer_chars=len(parsed["answer"]),
+            reasoning_chars=len(parsed["reasoning"]),
+            token_events=token_events,
+            generation_latency_ms=round((time.perf_counter() - generation_start) * 1000),
+            total_latency_ms=round((time.perf_counter() - request_start) * 1000),
         )
         yield "data: [DONE]\n\n"
 
@@ -485,6 +582,16 @@ class RagPipeline:
                     ),
                 )
             await connection.commit()
+            log_event(
+                logger,
+                "query_logged",
+                query_preview=query[:160],
+                retrieval_latency_ms=round(retrieval_latency * 1000),
+                chunk_count=chunk_count,
+                matched_document_ids=matched_document_ids,
+                matched_chunk_ids=matched_chunk_ids,
+                answer_chars=len(str(parsed["answer"])),
+            )
         finally:
             await connection.close()
 

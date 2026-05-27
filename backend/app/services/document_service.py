@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
@@ -9,10 +10,13 @@ from pypdf import PdfReader
 
 from ..config import settings
 from ..db import utc_now
+from ..observability import get_logger, log_event
 from ..repositories import ChunkRepository, DocumentRecord, DocumentRepository
 from .chunking_service import ChunkingService
 from .embedding_service import EmbeddingService
 from .vector_store_service import VectorStoreService
+
+logger = get_logger("document_service")
 
 
 class DocumentService:
@@ -31,6 +35,7 @@ class DocumentService:
         self.vector_store_service = vector_store_service or VectorStoreService()
 
     async def save_upload_initial(self, file: UploadFile) -> DocumentRecord:
+        start = time.perf_counter()
         raw_bytes = await file.read()
         if not raw_bytes:
             raise HTTPException(
@@ -53,21 +58,41 @@ class DocumentService:
         )
         self.repository.update_status(document.id, "processing")
         document.status = "processing"
+        log_event(
+            logger,
+            "document_saved",
+            document_id=document.id,
+            filename=filename,
+            content_type=content_type,
+            size_bytes=len(raw_bytes),
+            storage_path=str(storage_path),
+            latency_ms=round((time.perf_counter() - start) * 1000),
+        )
         return document
 
     def process_upload_background(self, document_id: int, storage_path: str, filename: str) -> None:
+        start = time.perf_counter()
         try:
+            log_event(
+                logger,
+                "document_processing_started",
+                document_id=document_id,
+                filename=filename,
+                storage_path=storage_path,
+            )
             raw_bytes = Path(storage_path).read_bytes()
             extracted_text = self._extract_text(raw_bytes, filename)
 
             document = self.repository.get(document_id)
             if not document:
+                log_event(logger, "document_processing_skipped", document_id=document_id, reason="missing_document")
                 return
 
             uploaded_at = document.uploaded_at or utc_now()
             chunks = self.chunking_service.create_chunks(extracted_text, uploaded_at)
             if not chunks:
                 self.repository.update_status(document_id, "failed")
+                log_event(logger, "document_processing_failed", document_id=document_id, reason="no_chunks_created")
                 return
 
             chunk_records = self.chunk_repository.bulk_create(
@@ -99,9 +124,25 @@ class DocumentService:
                 payloads=payloads,
             )
             self.repository.update_status(document_id, "completed")
-        except Exception as e:
-            print(f"Error processing document {document_id}: {e}")
+            log_event(
+                logger,
+                "document_processing_completed",
+                document_id=document_id,
+                filename=filename,
+                chunk_count=len(chunk_records),
+                extracted_chars=len(extracted_text),
+                latency_ms=round((time.perf_counter() - start) * 1000),
+            )
+        except Exception:
             self.repository.update_status(document_id, "failed")
+            log_event(
+                logger,
+                "document_processing_failed",
+                level=logger.exception,
+                document_id=document_id,
+                filename=filename,
+                latency_ms=round((time.perf_counter() - start) * 1000),
+            )
 
     def _extract_text(self, raw_bytes: bytes, filename: str) -> str:
         lowered_name = filename.lower()
