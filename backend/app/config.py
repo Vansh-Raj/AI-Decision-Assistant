@@ -49,6 +49,9 @@ class Settings:
     compression_similarity_threshold: float = float(
         os.getenv("COMPRESSION_SIMILARITY_THRESHOLD", "0.20")
     )
+    enable_context_compression: bool = os.getenv(
+        "ENABLE_CONTEXT_COMPRESSION", "0"
+    ).lower() in {"1", "true", "yes"}
     bm25_top_k: int = int(os.getenv("BM25_TOP_K", "8"))
     hybrid_candidate_limit: int = int(os.getenv("HYBRID_CANDIDATE_LIMIT", "12"))
     chunk_size: int = int(
@@ -66,6 +69,7 @@ class Settings:
     )
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
     prompt_preview_chars: int = int(os.getenv("PROMPT_PREVIEW_CHARS", "280"))
+    planner_max_history_messages: int = int(os.getenv("PLANNER_MAX_HISTORY_MESSAGES", "6"))
 
 
 settings = Settings()

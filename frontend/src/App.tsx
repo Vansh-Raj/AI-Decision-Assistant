@@ -151,6 +151,7 @@ function MessageBubble({
 
   return (
     <div className={`message ${msg.role}`}>
+      <div className="sr-only" data-testid={`message-role-${msg.role}`}></div>
       <div className={`avatar ${msg.role}`}>
         {msg.role === 'assistant' ? <Bot size={18} /> : <User size={18} />}
       </div>
@@ -416,6 +417,7 @@ function App() {
             onChange={handleFileUpload}
             className="hidden-input"
             accept=".pdf,.txt"
+            data-testid="upload-input"
           />
           <Upload className="upload-icon" size={22} />
           <div className="upload-title">Upload PDF or text</div>
@@ -524,12 +526,17 @@ function App() {
                 </section>
               ) : (
                 messages.map((msg, index) => (
-                  <MessageBubble
+                  <div
                     key={index}
-                    msg={msg}
-                    isLoading={isLoading && index === messages.length - 1}
-                    prevUserMsg={index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : undefined}
-                  />
+                    data-testid="chat-message"
+                    data-message-role={msg.role}
+                  >
+                    <MessageBubble
+                      msg={msg}
+                      isLoading={isLoading && index === messages.length - 1}
+                      prevUserMsg={index > 0 && messages[index - 1].role === 'user' ? messages[index - 1].content : undefined}
+                    />
+                  </div>
                 ))
               )}
               <div ref={messagesEndRef} />
@@ -547,11 +554,13 @@ function App() {
                 }
                 className="chat-input"
                 disabled={isLoading || activeDocument?.status === 'processing'}
+                data-testid="chat-input"
               />
               <button
                 type="submit"
                 className="send-button"
                 disabled={!input.trim() || isLoading || activeDocument?.status === 'processing'}
+                data-testid="send-button"
               >
                 <Send size={18} />
               </button>

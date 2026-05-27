@@ -164,10 +164,184 @@ cd frontend
 - In this workspace, test execution still depends on resolving existing dependency/import issues outside the README changes.
 - Frontend validation can be done with `npm run build` inside `frontend`.
 
-## Deliverable Notes
+## Demo Automation
 
-This repo includes the main application code and a README. If you are packaging it as a submission, you would still want to add:
+This repo includes a small runner script for a repeatable demo:
 
-- A short demo video
-- A brief architecture screenshot or simplified diagram
-- A short section showing one or two example question/answer/citation flows
+```bash
+python3 scripts/run_demo_scenarios.py
+```
+
+By default it uploads:
+
+`/home/vansh/Documents/avoidingarmageddon_chapter.pdf`
+
+It then:
+
+1. Uploads the PDF to the local backend
+2. Polls until ingestion is complete
+3. Runs the test scenarios below in order
+4. Writes a Markdown summary to `scratch/demo_scenarios_report.md`
+
+This is useful for preparing a demo video or validating behavior after changes.
+
+The runner supports multiple scenario sets. For the GAO report example:
+
+```bash
+python3 scripts/run_demo_scenarios.py --scenario-set gao_ai_risk
+```
+
+or explicitly:
+
+```bash
+python3 scripts/run_demo_scenarios.py --file /home/vansh/Documents/gao-25-107435.pdf
+```
+
+For browser-driven demo playback through the actual frontend UI, use:
+
+```bash
+cd frontend
+npm run demo:browser
+```
+
+This browser runner:
+
+1. Opens the Vite frontend in Chromium
+2. Uploads `/home/vansh/Documents/avoidingarmageddon_chapter.pdf`
+3. Waits for ingestion to finish
+4. Types and submits the test scenarios through the chat UI
+5. Optionally records a browser video to `frontend/demo-videos/`
+
+It assumes the backend and frontend are already running locally.
+
+Optional environment variables:
+
+- `DEMO_SCENARIO_SET` to choose a scenario set such as `avoidingarmageddon` or `gao_ai_risk`
+- `DEMO_FRONTEND_URL` to target a non-default frontend URL
+- `DEMO_UPLOAD_FILE` to change the uploaded file
+- `DEMO_PAUSE_MS` to slow down or speed up the pacing between steps
+- `DEMO_TYPE_DELAY_MS` to change how quickly text is typed
+- `DEMO_HEADLESS=1` to run without a visible browser
+- `DEMO_RECORD_VIDEO=0` to disable Playwright's recorded video output
+
+## Test Scenarios
+
+These are the recommended demo and evaluation prompts for the uploaded `avoidingarmageddon_chapter.pdf` document.
+
+### Group 1: Factual Retrieval
+
+**Q1 - Direct fact**
+
+Question:
+`How many people died and were injured in the 26/11 Mumbai attacks?`
+
+Expected:
+164 dead and 300+ injured, ideally citing page 2. This is the baseline retrieval check.
+
+**Q2 - Named entity detail**
+
+Question:
+`Who was David Coleman Headley and what was his role in the Mumbai attack?`
+
+Expected:
+A multi-chunk answer covering surveillance trips, name change, guilty plea, and ISI meetings across pages 6-7.
+
+### Group 2: Reasoning & Inference
+
+**Q3 - Motive inference**
+
+Question:
+`Why did Lashkar-e-Tayyiba choose Mumbai specifically as the target, rather than any other Indian city?`
+
+Expected:
+The answer should synthesize Mumbai as a financial capital, media center, Bollywood symbol, and high-value Western/Israeli target. This tests reasoning across pages 2-4 rather than direct extraction.
+
+**Q4 - Strategic intent**
+
+Question:
+`What was al Qaeda's ultimate goal in the Mumbai operation, and how did it differ from LeT's goal?`
+
+Expected:
+The answer should distinguish LeT's peace-process disruption goal from al Qaeda's broader nuclear-war and counterterrorism-disruption objective.
+
+### Group 3: Multi-Turn / Pronoun Resolution
+
+**Q5 - Follow-up with pronoun**
+
+Turn 1:
+`What was the back channel between India and Pakistan?`
+
+Turn 2:
+`Why did it stall?`
+
+Expected:
+The second turn should resolve `it` to the India-Pakistan back channel peace process before retrieval.
+
+**Q6 - Chained reasoning**
+
+Turn 1:
+`Who was Zaki Rehman Lakhvi?`
+
+Turn 2:
+`What was his relationship to the training of the attackers?`
+
+Expected:
+The follow-up should remain grounded on Lakhvi and connect him correctly to attacker training.
+
+### Group 4: Grounding / Faithfulness
+
+**Q7 - Not in context trap**
+
+Question:
+`What sentence did Zaki Rehman Lakhvi receive for his role in the Mumbai attacks?`
+
+Expected:
+The system should say it could not find sentencing information in the uploaded documents. This is the key hallucination-resistance check.
+
+**Q8 - Partial context trap**
+
+Question:
+`What did Headley find when he visited the Chabad house?`
+
+Expected:
+The system should mention only what the document actually states and avoid inventing details about what he found inside.
+
+### Group 5: Decision Support
+
+**Q9 - Risk analysis**
+
+Question:
+`Based on this document, what are the key risks that a future Mumbai-style attack would pose to U.S. strategic interests?`
+
+Expected:
+The answer should synthesize NATO supply-line risk, nuclear escalation, economic disruption, and Afghanistan-related implications.
+
+**Q10 - Comparative judgment**
+
+Question:
+`The document argues India showed restraint after 26/11. What evidence supports this, and what might have happened if India had responded militarily?`
+
+Expected:
+The answer should combine evidence of restraint with a grounded counterfactual about escalation, nuclear risk, and broader geopolitical fallout.
+
+## Alternate Scenario Set: GAO AI Risk Assessments
+
+The repo also includes a second scenario set for:
+
+`/home/vansh/Documents/gao-25-107435.pdf`
+
+To run it through the browser automation:
+
+```bash
+cd frontend
+DEMO_SCENARIO_SET=gao_ai_risk DEMO_UPLOAD_FILE=/home/vansh/Documents/gao-25-107435.pdf npm run demo:browser
+```
+
+This set focuses on:
+
+- factual retrieval from the GAO report
+- understanding the six foundational risk-assessment activities
+- diagnosing why the agency assessments were incomplete
+- multi-turn follow-ups about Executive Order 14110 and CISA guidance
+- grounding checks where the report intentionally withholds sector-specific detail
+- decision-support style synthesis of what DHS should prioritize next

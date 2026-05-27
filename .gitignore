@@ -1,3 +1,6 @@
 .env
 .env
 backend/data/uploads/
+frontend/demo-videos
+frontend/scripts
+scripts

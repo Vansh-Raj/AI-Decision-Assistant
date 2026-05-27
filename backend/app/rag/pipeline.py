@@ -116,13 +116,56 @@ class RagPipeline:
         self.history_repository = history_repository or QueryHistoryRepository()
         self.chunk_repository = chunk_repository or ChunkRepository()
 
+    def _should_use_planner(
+        self, query: str, chat_history: list[ChatMessage] | None = None
+    ) -> bool:
+        lowered = query.lower()
+        has_follow_up_cue = bool(
+            re.search(r"\b(it|they|them|this|that|these|those|he|she|his|her|their|former|latter)\b", lowered)
+        )
+        has_history = bool(chat_history)
+        return has_history or has_follow_up_cue
+
+    def _heuristic_plan(self, query: str) -> RetrievalPlan:
+        lowered = query.lower()
+        bm25_markers = (
+            "how many",
+            "who was",
+            "what was",
+            "when did",
+            "which",
+            "name",
+            "page",
+            "sentence",
+        )
+        mode = "bm25" if any(marker in lowered for marker in bm25_markers) else "hybrid"
+        return RetrievalPlan(
+            mode=mode,
+            search_query=query,
+            reason="Used heuristic retrieval plan for a standalone query.",
+        )
+
     @traceable(name="choose_retrieval_plan")
     def choose_retrieval_plan(self, query: str, chat_history: list[ChatMessage] | None = None) -> RetrievalPlan:
+        if not self._should_use_planner(query, chat_history):
+            plan = self._heuristic_plan(query)
+            log_event(
+                logger,
+                "retrieval_plan_chosen",
+                mode=plan.mode,
+                query_preview=query[:160],
+                rewritten_query=plan.search_query[:160],
+                chat_history_messages=0,
+                planner_reason=plan.reason,
+            )
+            return plan
+
         messages = [
             SystemMessage(content=RETRIEVAL_PLANNER_PROMPT)
         ]
         if chat_history:
-            history_str = "\n".join([f"{msg.role}: {msg.content}" for msg in chat_history])
+            relevant_history = chat_history[-settings.planner_max_history_messages :]
+            history_str = "\n".join([f"{msg.role}: {msg.content}" for msg in relevant_history])
             messages.append(SystemMessage(content=f"Chat History:\n{history_str}"))
         messages.append(HumanMessage(content=f"Current Query: {query}"))
         
@@ -226,6 +269,9 @@ class RagPipeline:
             search_type="mmr",
             search_kwargs=search_kwargs,
         )
+        if not settings.enable_context_compression:
+            return base_retriever.invoke(query)
+
         compression_retriever = ContextualCompressionRetriever(
             base_retriever=base_retriever,
             base_compressor=EmbeddingsFilter(
