@@ -1,5 +1,7 @@
 # AI Decision Assistant
 
+[![Watch the Demo Video](https://img.shields.io/badge/Video-Watch%20Demo-blue?style=for-the-badge)](https://www.youtube.com/watch?v=pxBIAaNvD50)
+
 An AI-assisted document Q&A application built for a take-home assignment. Users can upload PDFs or text files, ask questions against the uploaded content, and inspect streamed answers with citations and retrieval details.
 
 ## What This Repo Implements
@@ -7,7 +9,8 @@ An AI-assisted document Q&A application built for a take-home assignment. Users 
 - FastAPI backend for upload, query, history, document status, and answer evaluation APIs
 - Document ingestion for text-based PDFs and UTF-8 text files
 - Chunking with `RecursiveCharacterTextSplitter`
-- Embeddings via OpenRouter-compatible `OpenAIEmbeddings`
+- Embeddings via `openai/text-embedding-3-small`
+- LLM Generation via `openai/gpt-5-nano`
 - Vector storage in Qdrant
 - Query history and document metadata in PostgreSQL
 - RAG answering with semantic, BM25, and hybrid retrieval modes
@@ -164,184 +167,105 @@ cd frontend
 - In this workspace, test execution still depends on resolving existing dependency/import issues outside the README changes.
 - Frontend validation can be done with `npm run build` inside `frontend`.
 
-## Demo Automation
-
-This repo includes a small runner script for a repeatable demo:
-
-```bash
-python3 scripts/run_demo_scenarios.py
-```
-
-By default it uploads:
-
-`/home/vansh/Documents/avoidingarmageddon_chapter.pdf`
-
-It then:
-
-1. Uploads the PDF to the local backend
-2. Polls until ingestion is complete
-3. Runs the test scenarios below in order
-4. Writes a Markdown summary to `scratch/demo_scenarios_report.md`
-
-This is useful for preparing a demo video or validating behavior after changes.
-
-The runner supports multiple scenario sets. For the GAO report example:
-
-```bash
-python3 scripts/run_demo_scenarios.py --scenario-set gao_ai_risk
-```
-
-or explicitly:
-
-```bash
-python3 scripts/run_demo_scenarios.py --file /home/vansh/Documents/gao-25-107435.pdf
-```
-
-For browser-driven demo playback through the actual frontend UI, use:
-
-```bash
-cd frontend
-npm run demo:browser
-```
-
-This browser runner:
-
-1. Opens the Vite frontend in Chromium
-2. Uploads `/home/vansh/Documents/avoidingarmageddon_chapter.pdf`
-3. Waits for ingestion to finish
-4. Types and submits the test scenarios through the chat UI
-5. Optionally records a browser video to `frontend/demo-videos/`
-
-It assumes the backend and frontend are already running locally.
-
-Optional environment variables:
-
-- `DEMO_SCENARIO_SET` to choose a scenario set such as `avoidingarmageddon` or `gao_ai_risk`
-- `DEMO_FRONTEND_URL` to target a non-default frontend URL
-- `DEMO_UPLOAD_FILE` to change the uploaded file
-- `DEMO_PAUSE_MS` to slow down or speed up the pacing between steps
-- `DEMO_TYPE_DELAY_MS` to change how quickly text is typed
-- `DEMO_HEADLESS=1` to run without a visible browser
-- `DEMO_RECORD_VIDEO=0` to disable Playwright's recorded video output
 
 ## Test Scenarios
 
-These are the recommended demo and evaluation prompts for the uploaded `avoidingarmageddon_chapter.pdf` document.
+These are the recommended demo and evaluation prompts for the uploaded `gao-25-107435.pdf` document.
 
 ### Group 1: Factual Retrieval
 
-**Q1 - Direct fact**
+**Q1 - Report identification**
 
 Question:
-`How many people died and were injured in the 26/11 Mumbai attacks?`
+`What is the main conclusion of GAO-25-107435?`
 
 Expected:
-164 dead and 300+ injured, ideally citing page 2. This is the baseline retrieval check.
+DHS needs to improve AI risk assessment guidance for critical infrastructure sectors because the initial assessments did not fully address key risk activities.
 
-**Q2 - Named entity detail**
+**Q2 - Deadline detail**
 
 Question:
-`Who was David Coleman Headley and what was his role in the Mumbai attack?`
+`By when were the sector risk management agencies required to submit their initial AI risk assessments to DHS?`
 
 Expected:
-A multi-chunk answer covering surveillance trips, name change, guilty plea, and ISI meetings across pages 6-7.
+By January 29, 2024, within 90 days of Executive Order 14110.
 
-### Group 2: Reasoning & Inference
+### Group 2: Framework Comprehension
 
-**Q3 - Motive inference**
+**Q3 - Six activities**
 
 Question:
-`Why did Lashkar-e-Tayyiba choose Mumbai specifically as the target, rather than any other Indian city?`
+`What six activities does GAO say are foundational for effective AI risk assessment and mitigation in critical infrastructure sectors?`
 
 Expected:
-The answer should synthesize Mumbai as a financial capital, media center, Bollywood symbol, and high-value Western/Israeli target. This tests reasoning across pages 2-4 rather than direct extraction.
+Should list the six activities: methodology, AI uses, potential risks, level of risk, mitigation strategies, and mapping mitigations to risks.
 
-**Q4 - Strategic intent**
+**Q4 - Assessment gaps**
 
 Question:
-`What was al Qaeda's ultimate goal in the Mumbai operation, and how did it differ from LeT's goal?`
+`Which two risk assessment activities did none of the 17 sector assessments fully address?`
 
 Expected:
-The answer should distinguish LeT's peace-process disruption goal from al Qaeda's broader nuclear-war and counterterrorism-disruption objective.
+Evaluating the level of risk and fully identifying potential risks including likelihood of occurrence.
 
-### Group 3: Multi-Turn / Pronoun Resolution
+### Group 3: Reasoning & Diagnosis
 
-**Q5 - Follow-up with pronoun**
+**Q5 - Why mapping failed**
+
+Question:
+`Why did many agencies fail to map mitigation strategies to risks in their AI sector assessments?`
+
+Expected:
+Because they had not fully evaluated the level of risk, which made it difficult to map mitigations to specific risks.
+
+**Q6 - Root causes**
+
+Question:
+`What reasons does the report give for the agencies' mixed progress on the AI risk assessments?`
+
+Expected:
+Should synthesize the short 90-day timeline, the evolving nature of AI, and incomplete DHS guidance.
+
+### Group 4: Multi-Turn / Pronoun Resolution
+
+**Q7 - Follow-up on executive order**
 
 Turn 1:
-`What was the back channel between India and Pakistan?`
+`What did Executive Order 14110 require the sector risk management agencies to do?`
 
 Turn 2:
-`Why did it stall?`
+`Why was that deadline difficult for them to meet?`
 
 Expected:
-The second turn should resolve `it` to the India-Pakistan back channel peace process before retrieval.
+The follow-up should resolve the deadline reference and explain the 90-day challenge.
 
-**Q6 - Chained reasoning**
+**Q8 - Follow-up on guidance**
 
 Turn 1:
-`Who was Zaki Rehman Lakhvi?`
+`What improvements did CISA make to the AI risk assessment template in 2024?`
 
 Turn 2:
-`What was his relationship to the training of the attackers?`
+`What key gap still remained in it?`
 
 Expected:
-The follow-up should remain grounded on Lakhvi and connect him correctly to attacker training.
+The second turn should stay grounded on the updated template and note that likelihood of occurrence and full level-of-risk evaluation still were not fully addressed.
 
-### Group 4: Grounding / Faithfulness
+### Group 5: Grounding / Faithfulness
 
-**Q7 - Not in context trap**
+**Q9 - Not in context trap**
 
 Question:
-`What sentence did Zaki Rehman Lakhvi receive for his role in the Mumbai attacks?`
+`Which specific critical infrastructure sector had the strongest AI risk assessment according to GAO?`
 
 Expected:
-The system should say it could not find sentencing information in the uploaded documents. This is the key hallucination-resistance check.
+The report explicitly avoids identifying specific sectors for sensitive reasons, so the answer should say it cannot determine that from the uploaded document.
 
-**Q8 - Partial context trap**
+### Group 6: Decision Support
+
+**Q10 - Recommendation synthesis**
 
 Question:
-`What did Headley find when he visited the Chabad house?`
+`If you were advising DHS based only on this report, what should it prioritize before the January 2025 assessment cycle and why?`
 
 Expected:
-The system should mention only what the document actually states and avoid inventing details about what he found inside.
-
-### Group 5: Decision Support
-
-**Q9 - Risk analysis**
-
-Question:
-`Based on this document, what are the key risks that a future Mumbai-style attack would pose to U.S. strategic interests?`
-
-Expected:
-The answer should synthesize NATO supply-line risk, nuclear escalation, economic disruption, and Afghanistan-related implications.
-
-**Q10 - Comparative judgment**
-
-Question:
-`The document argues India showed restraint after 26/11. What evidence supports this, and what might have happened if India had responded militarily?`
-
-Expected:
-The answer should combine evidence of restraint with a grounded counterfactual about escalation, nuclear risk, and broader geopolitical fallout.
-
-## Alternate Scenario Set: GAO AI Risk Assessments
-
-The repo also includes a second scenario set for:
-
-`/home/vansh/Documents/gao-25-107435.pdf`
-
-To run it through the browser automation:
-
-```bash
-cd frontend
-DEMO_SCENARIO_SET=gao_ai_risk DEMO_UPLOAD_FILE=/home/vansh/Documents/gao-25-107435.pdf npm run demo:browser
-```
-
-This set focuses on:
-
-- factual retrieval from the GAO report
-- understanding the six foundational risk-assessment activities
-- diagnosing why the agency assessments were incomplete
-- multi-turn follow-ups about Executive Order 14110 and CISA guidance
-- grounding checks where the report intentionally withholds sector-specific detail
-- decision-support style synthesis of what DHS should prioritize next
+Should synthesize GAO's recommendation to quickly update and share guidance and templates, especially around likelihood of occurrence and evaluating level of risk.
