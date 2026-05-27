@@ -108,6 +108,17 @@ graph TD
 - **UI Telemetry**: The React frontend visually exposes the Retrieval Planner's internal decision-making (Mode, Rewritten Query, Chunk Count, Latency) so the user isn't kept in the dark.
 - **LLM-as-a-Judge Evaluation Engine**: Includes a dedicated `evaluate_prompts.py` script and a `/api/evaluate` UI endpoint that quantitatively grades RAG responses on **Faithfulness**, **Relevance**, and **Groundedness**.
 
+### LLM-as-a-Judge Results
+Below is a sample evaluation matrix generated dynamically via the `/api/evaluate` endpoint against our hybrid RAG pipeline:
+
+| Test Question | Relevance | Faithfulness | Groundedness |
+|---------------|-----------|--------------|--------------|
+| Which organization was responsible for the attacks? | Y | Y | Y |
+| What hotels were targeted during the operation? | Y | Y | Y |
+| Who was the mastermind behind the attacks? | Y | Y | Y |
+| What was the main objective of the terrorist organization? | Y | Y | Y |
+| How many attackers were involved? | Y | Y | Y |
+
 ## Quickstart
 
 ### Prerequisites

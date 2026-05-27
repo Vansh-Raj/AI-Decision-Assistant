@@ -103,7 +103,7 @@ def main():
     relevance_eval = LangChainStringEvaluator("criteria", config={"criteria": "relevance", "llm": eval_llm})
     
     # Faithfulness (Helpfulness/Accuracy): Is the information accurate based on the context?
-    faithfulness_eval = LangChainStringEvaluator("criteria", config={"criteria": "accuracy", "llm": eval_llm})
+    faithfulness_eval = LangChainStringEvaluator("criteria", config={"criteria": {"faithfulness": "Is the information factually accurate and faithful to the provided context?"}, "llm": eval_llm})
     
     # Groundedness: Is the response fully grounded in the provided document without hallucinating external info?
     groundedness_eval = LangChainStringEvaluator(

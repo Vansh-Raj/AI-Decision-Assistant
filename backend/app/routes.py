@@ -35,7 +35,7 @@ async def evaluate_answer(payload: EvaluateRequest) -> EvaluateResponse:
     )
     
     rel_eval = load_evaluator("criteria", criteria="relevance", llm=eval_llm)
-    acc_eval = load_evaluator("criteria", criteria="accuracy", llm=eval_llm)
+    acc_eval = load_evaluator("criteria", criteria={"faithfulness": "Is the information factually accurate and faithful to the provided context?"}, llm=eval_llm)
     grnd_eval = load_evaluator(
         "criteria", 
         criteria={"groundedness": "Does the submission ONLY contain information strictly present in the reference context?"},
